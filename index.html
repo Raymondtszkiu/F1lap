@@ -9,7 +9,6 @@
   <style>
     * { box-sizing: border-box; }
     body { background-color: #000000; color: #ffffff; font-family: monospace; overflow: hidden; margin: 0; }
-    /* 滾動條極客暗黑風格 */
     ::-webkit-scrollbar { width: 4px; height: 4px; }
     ::-webkit-scrollbar-track { background: #0a0a0a; }
     ::-webkit-scrollbar-thumb { background: #222222; }
@@ -30,21 +29,13 @@
     <!-- 防劇透同步器 (Live Delay Offset Slider) -->
     <div class="flex items-center space-x-2 text-xs">
       <span class="text-neutral-500">DELAY OFFSET:</span>
-      <input
-        type="range"
-        id="delaySlider"
-        min="0"
-        max="90"
-        value="30"
-        class="w-28 h-1 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-red-600"
-      />
+      <input type="range" id="delaySlider" min="0" max="90" value="30" class="w-28 h-1 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-red-600" />
       <span id="delayDisplay" class="w-8 text-right font-bold text-neutral-300">30s</span>
     </div>
   </header>
 
   <!-- 主操作區 (100vh 內部鎖死 Grid) -->
   <main class="flex-1 grid grid-cols-12 gap-1 p-1 overflow-hidden">
-    
     <!-- 左側 60%：融合式硬核數據表格 (Unified Leaderboard) -->
     <section class="col-span-7 bg-[#050505] border border-[#1a1a1a] flex flex-col overflow-hidden">
       <table class="w-full text-left border-collapse table-fixed">
@@ -62,25 +53,21 @@
       </table>
       <div class="flex-1 overflow-y-auto">
         <table class="w-full text-left border-collapse table-fixed">
-          <tbody id="leaderboardBody" class="divide-y divide-[#151515] text-xs">
-            <!-- 動態注入車手行 -->
-          </tbody>
+          <tbody id="leaderboardBody" class="divide-y divide-[#151515] text-xs"></tbody>
         </table>
       </div>
     </section>
 
     <!-- 右側 40%：2D 賽道圖與即時增長圖表 -->
     <section class="col-span-5 flex flex-col gap-1 overflow-hidden">
-      
-      <!-- 上半部：HTML5 Canvas 2D 賽道圖 (Track Map Radar) -->
+      <!-- HTML5 Canvas 2D 賽道圖 (Track Map Radar) -->
       <div class="h-1/2 bg-[#050505] border border-[#1a1a1a] relative flex flex-col">
         <div class="absolute top-1 left-2 text-[9px] text-neutral-500 z-10">TRACK MAP // 2D RADAR</div>
         <div class="flex-1 w-full h-full relative">
           <canvas id="trackMapCanvas" class="w-full h-full block"></canvas>
         </div>
       </div>
-
-      <!-- 下半部：HTML5 Canvas 實時增長圖表面板 (Position Trace & Tyre Gantt) -->
+      <!-- HTML5 Canvas 實時增長圖表面板 (Position Trace & Tyre Gantt) -->
       <div class="h-1/2 bg-[#050505] border border-[#1a1a1a] relative flex flex-col p-1">
         <div class="flex justify-between text-[9px] text-neutral-500 mb-0.5">
           <span>ANALYTICS // LIVE TRACE & STRATEGY</span>
@@ -90,7 +77,6 @@
           <canvas id="analyticsCanvas" class="w-full h-full block"></canvas>
         </div>
       </div>
-
     </section>
   </main>
 
@@ -98,41 +84,33 @@
   <script>
     (function () {
       // --- 系統全域狀態 ---
-      let delayOffset = 30; // 延遲秒數
+      let delayOffset = 30; 
+      let activeSessionKey = 'latest'; // 動態 Session Key，支援降級備援
+
       const state = {
         sessionName: 'LIVE SESSION',
         circuitName: 'CIRCUIT',
-        drivers: {}, // driver_number -> Driver Metadata
-        circuitPath: [], // [{x, y}] 官方坐標軌跡
-        activeCarData: {}, // driver_number -> CarData
-        activeIntervals: {}, // driver_number -> IntervalData
-        activeLaps: {}, // driver_number -> LapData
-        activeStints: {}, // driver_number -> StintData[]
-        activeLocations: {}, // driver_number -> LocationData
-        activeRaceControl: null, // 最新賽事控制事件
-        activePits: {}, // driver_number -> PitData
-        activeRadios: {}, // driver_number -> mp3 url
-        positionsHistory: [], // [{ time: string, positions: { [dNum]: pos } }]
+        drivers: {},
+        circuitPath: [], 
+        activeCarData: {}, 
+        activeIntervals: {},
+        activeLaps: {}, 
+        activeStints: {},
+        activeLocations: {}, 
+        activeRaceControl: null,
+        activePits: {}, 
+        activeRadios: {}, 
+        positionsHistory: [], 
         bestLapSec: null
       };
 
-      // --- 防劇透緩衝佇列 (Buffer Queue) ---
       const buffers = {
-        carData: [],
-        locations: [],
-        laps: [],
-        intervals: [],
-        raceControl: [],
-        pits: [],
-        radios: [],
-        positions: []
+        carData: [], locations: [], laps: [], intervals: [], raceControl: [], pits: [], radios: [], positions: []
       };
 
-      // --- DOM 元素快取 ---
       const delaySlider = document.getElementById('delaySlider');
       const delayDisplay = document.getElementById('delayDisplay');
       const sessionMeta = document.getElementById('sessionMeta');
-      const topBanner = document.getElementById('topBanner');
       const raceControlFlag = document.getElementById('raceControlFlag');
       const leaderboardBody = document.getElementById('leaderboardBody');
       const trackMapCanvas = document.getElementById('trackMapCanvas');
@@ -140,7 +118,6 @@
       const trackCtx = trackMapCanvas.getContext('2d');
       const analyticsCtx = analyticsCanvas.getContext('2d');
 
-      // --- 工具函式 ---
       const formatLapTime = (sec) => {
         if (sec === null || sec === undefined || isNaN(sec)) return '--:--.---';
         const m = Math.floor(sec / 60);
@@ -148,20 +125,27 @@
         return `${m}:${s.padStart(6, '0')}`;
       };
 
-      // --- 1. 防劇透 Slider 事件綁定 ---
       delaySlider.addEventListener('input', (e) => {
         delayOffset = Number(e.target.value);
         delayDisplay.textContent = `${delayOffset}s`;
       });
 
-      // --- 2. 靜態資料初始化 (Sessions, Meetings Layout, Drivers) ---
+      // --- 1. 靜態資料初始化與動態降級 ---
       async function initStaticData() {
         try {
-          const sessRes = await fetch('https://api.openf1.org/v1/sessions?session_key=latest');
-          const sessJson = await sessRes.json();
+          const sessRes = await fetch(`https://api.openf1.org/v1/sessions?session_key=${activeSessionKey}`);
+          let sessJson = await sessRes.json();
+          
+          // 降級保護：如果 latest 為空，自動降級至 2023 新加坡大獎賽 (9159) 供測試
+          if (!Array.isArray(sessJson) || sessJson.length === 0) {
+            activeSessionKey = '9159';
+            const fallbackRes = await fetch(`https://api.openf1.org/v1/sessions?session_key=${activeSessionKey}`);
+            sessJson = await fallbackRes.json();
+          }
+
           if (Array.isArray(sessJson) && sessJson.length > 0) {
             const latestSess = sessJson[sessJson.length - 1];
-            state.sessionName = latestSess.session_name || 'RACE';
+            state.sessionName = latestSess.session_name || 'HISTORICAL FALLBACK';
             state.circuitName = latestSess.circuit_short_name || 'CIRCUIT';
             sessionMeta.textContent = `[${state.sessionName.toUpperCase()} - ${state.circuitName.toUpperCase()}]`;
           }
@@ -176,14 +160,11 @@
             }
           }
 
-          const dRes = await fetch('https://api.openf1.org/v1/drivers?session_key=latest');
+          const dRes = await fetch(`https://api.openf1.org/v1/drivers?session_key=${activeSessionKey}`);
           const dJson = await dRes.json();
           if (Array.isArray(dJson)) {
             dJson.forEach(d => {
-              state.drivers[d.driver_number] = {
-                ...d,
-                team_colour: d.team_colour ? `#${d.team_colour}` : '#FFFFFF'
-              };
+              state.drivers[d.driver_number] = { ...d, team_colour: d.team_colour ? `#${d.team_colour}` : '#FFFFFF' };
             });
           }
         } catch (err) {
@@ -191,12 +172,12 @@
         }
       }
 
-      // --- 3. 數據輪詢機制 (Pull into Buffers) ---
+      // --- 2. 數據輪詢機制 (綁定動態 Session Key) ---
       async function fetchHighFreq() {
         try {
           const [carRes, locRes] = await Promise.all([
-            fetch('https://api.openf1.org/v1/car_data?session_key=latest'),
-            fetch('https://api.openf1.org/v1/location?session_key=latest')
+            fetch(`https://api.openf1.org/v1/car_data?session_key=${activeSessionKey}`),
+            fetch(`https://api.openf1.org/v1/location?session_key=${activeSessionKey}`)
           ]);
           const [carData, locData] = await Promise.all([carRes.json(), locRes.json()]);
           if (Array.isArray(carData)) buffers.carData.push(...carData);
@@ -207,13 +188,13 @@
       async function fetchMidFreq() {
         try {
           const [lapRes, intRes, rcRes, pitRes, radRes, posRes, stintRes] = await Promise.all([
-            fetch('https://api.openf1.org/v1/laps?session_key=latest'),
-            fetch('https://api.openf1.org/v1/intervals?session_key=latest'),
-            fetch('https://api.openf1.org/v1/race_control?session_key=latest'),
-            fetch('https://api.openf1.org/v1/pit?session_key=latest'),
-            fetch('https://api.openf1.org/v1/team_radio?session_key=latest'),
-            fetch('https://api.openf1.org/v1/position?session_key=latest'),
-            fetch('https://api.openf1.org/v1/stints?session_key=latest')
+            fetch(`https://api.openf1.org/v1/laps?session_key=${activeSessionKey}`),
+            fetch(`https://api.openf1.org/v1/intervals?session_key=${activeSessionKey}`),
+            fetch(`https://api.openf1.org/v1/race_control?session_key=${activeSessionKey}`),
+            fetch(`https://api.openf1.org/v1/pit?session_key=${activeSessionKey}`),
+            fetch(`https://api.openf1.org/v1/team_radio?session_key=${activeSessionKey}`),
+            fetch(`https://api.openf1.org/v1/position?session_key=${activeSessionKey}`),
+            fetch(`https://api.openf1.org/v1/stints?session_key=${activeSessionKey}`)
           ]);
 
           const [laps, intervals, rc, pits, radios, positions, stints] = await Promise.all([
@@ -238,31 +219,32 @@
         } catch (e) {}
       }
 
-      // --- 4. 延遲釋放引擎 (Synchronization Queue Drain) ---
+      // --- 3. 延遲釋放引擎與嚴格防空保護 ---
       function drainBuffers() {
         const targetTime = Date.now() - delayOffset * 1000;
 
         const extract = (arr) => {
-          const idx = arr.findIndex(item => new Date(item.date).getTime() > targetTime);
+          if (!Array.isArray(arr) || arr.length === 0) return []; // 空陣列保護
+          const idx = arr.findIndex(item => item.date && new Date(item.date).getTime() > targetTime);
           if (idx === -1) return arr.splice(0, arr.length);
           if (idx > 0) return arr.splice(0, idx);
           return [];
         };
 
         const readyCar = extract(buffers.carData);
-        readyCar.forEach(c => { state.activeCarData[c.driver_number] = c; });
+        if (readyCar.length > 0) readyCar.forEach(c => { if (c && c.driver_number) state.activeCarData[c.driver_number] = c; });
 
         const readyLoc = extract(buffers.locations);
-        readyLoc.forEach(l => { state.activeLocations[l.driver_number] = l; });
+        if (readyLoc.length > 0) readyLoc.forEach(l => { if (l && l.driver_number) state.activeLocations[l.driver_number] = l; });
 
         const readyInt = extract(buffers.intervals);
-        readyInt.forEach(i => { state.activeIntervals[i.driver_number] = i; });
+        if (readyInt.length > 0) readyInt.forEach(i => { if (i && i.driver_number) state.activeIntervals[i.driver_number] = i; });
 
         const readyLaps = extract(buffers.laps);
-        readyLaps.forEach(l => {
-          state.activeLaps[l.driver_number] = l;
-          if (l.lap_duration && (!state.bestLapSec || l.lap_duration < state.bestLapSec)) {
-            state.bestLapSec = l.lap_duration;
+        if (readyLaps.length > 0) readyLaps.forEach(l => {
+          if (l && l.driver_number) {
+            state.activeLaps[l.driver_number] = l;
+            if (l.lap_duration && (!state.bestLapSec || l.lap_duration < state.bestLapSec)) state.bestLapSec = l.lap_duration;
           }
         });
 
@@ -270,33 +252,32 @@
         if (readyRC.length > 0) state.activeRaceControl = readyRC[readyRC.length - 1];
 
         const readyPits = extract(buffers.pits);
-        readyPits.forEach(p => { state.activePits[p.driver_number] = p; });
+        if (readyPits.length > 0) readyPits.forEach(p => { if (p && p.driver_number) state.activePits[p.driver_number] = p; });
 
         const readyRadios = extract(buffers.radios);
-        readyRadios.forEach(r => { state.activeRadios[r.driver_number] = r.recording_url; });
+        if (readyRadios.length > 0) readyRadios.forEach(r => { if (r && r.driver_number) state.activeRadios[r.driver_number] = r.recording_url; });
 
         const readyPositions = extract(buffers.positions);
         if (readyPositions.length > 0) {
           readyPositions.forEach(p => {
-            const timeTag = new Date(p.date).toLocaleTimeString();
-            let entry = state.positionsHistory.find(e => e.time === timeTag);
-            if (!entry) {
-              entry = { time: timeTag, positions: {} };
-              state.positionsHistory.push(entry);
+            if (p && p.driver_number) {
+              const timeTag = new Date(p.date).toLocaleTimeString();
+              let entry = state.positionsHistory.find(e => e.time === timeTag);
+              if (!entry) {
+                entry = { time: timeTag, positions: {} };
+                state.positionsHistory.push(entry);
+              }
+              entry.positions[p.driver_number] = p.position;
             }
-            entry.positions[p.driver_number] = p.position;
           });
-          if (state.positionsHistory.length > 40) {
-            state.positionsHistory.shift();
-          }
+          if (state.positionsHistory.length > 40) state.positionsHistory.shift();
         }
 
         renderUI();
       }
 
-      // --- 5. 渲染表格與狀態列 (Solid Color Toggles) ---
+      // --- 4. UI 繪製 (Solid Color & Dashboard) ---
       function renderUI() {
-        // 全局旗號處理 (純轉色不閃爍)
         if (state.activeRaceControl) {
           const rc = state.activeRaceControl;
           if (rc.flag === 'RED') {
@@ -310,7 +291,6 @@
           }
         }
 
-        // 車手排序
         const driverList = Object.values(state.drivers);
         const latestPositions = state.positionsHistory[state.positionsHistory.length - 1]?.positions || {};
         driverList.sort((a, b) => {
@@ -319,7 +299,6 @@
           return posA - posB;
         });
 
-        // 構建 Table HTML
         let html = '';
         driverList.forEach((driver, idx) => {
           const dNum = driver.driver_number;
@@ -328,55 +307,38 @@
           const lap = state.activeLaps[dNum];
           const stints = state.activeStints[dNum];
           const currentStint = stints ? stints[stints.length - 1] : null;
-          const isBraking = car?.brake === 100; // 煞車狀態
-          const isOvertake = car?.drs === 8; // 2026 Manual Override 解鎖
+          const isBraking = car?.brake === 100;
+          const isOvertake = car?.drs === 8;
           const radioUrl = state.activeRadios[dNum];
 
-          // 輪胎配方 Badge
           let tyreBadge = '<span class="text-neutral-600">--</span>';
           if (currentStint) {
             const comp = currentStint.compound ? currentStint.compound.toUpperCase() : 'M';
             const colorClass = comp === 'SOFT' ? 'bg-red-500 text-white' : comp === 'HARD' ? 'bg-white text-black' : 'bg-yellow-400 text-black';
             tyreBadge = `
               <div class="flex items-center justify-center space-x-1">
-                <span class="w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-black ${colorClass}">
-                  ${comp[0]}
-                </span>
+                <span class="w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-black ${colorClass}">${comp[0]}</span>
                 <span class="text-[10px] text-neutral-300 font-mono">${currentStint.tyre_age_at_start || 0}</span>
               </div>
             `;
           }
 
-          // Mini Sectors 方塊矩陣
-          const segments = [
-            ...(lap?.segments_sector_1 || []),
-            ...(lap?.segments_sector_2 || []),
-            ...(lap?.segments_sector_3 || [])
-          ].slice(0, 12);
-
+          const segments = [...(lap?.segments_sector_1 || []), ...(lap?.segments_sector_2 || []), ...(lap?.segments_sector_3 || [])].slice(0, 12);
           let miniSectorsHtml = '<div class="flex items-center justify-center space-x-0.5">';
           segments.forEach(val => {
             let bg = 'bg-[#222222]';
-            if (val === 2051) bg = 'bg-[#b063ff]'; // 全場最快 (Purple)
-            else if (val === 2049) bg = 'bg-[#00d2be]'; // 個人最快 (Green)
-            else if (val === 2048) bg = 'bg-yellow-400'; // 常規
+            if (val === 2051) bg = 'bg-[#b063ff]'; 
+            else if (val === 2049) bg = 'bg-[#00d2be]'; 
+            else if (val === 2048) bg = 'bg-yellow-400'; 
             miniSectorsHtml += `<div class="w-1.5 h-3 ${bg}"></div>`;
           });
           miniSectorsHtml += '</div>';
 
-          // 煞車轉色小方塊 (Solid Red vs Dark Gray)
           const brakeColor = isBraking ? 'bg-red-600 text-white' : 'bg-[#1a1a1a] text-neutral-400';
 
           html += `
             <tr class="hover:bg-[#0a0a0a] transition-none">
-              <!-- POS -->
-              <td class="w-8 py-1 text-center">
-                <span class="inline-flex items-center justify-center w-5 h-5 font-bold text-[10px] ${brakeColor}">
-                  ${idx + 1}
-                </span>
-              </td>
-
-              <!-- 車手與油門進度條融合 -->
+              <td class="w-8 py-1 text-center"><span class="inline-flex items-center justify-center w-5 h-5 font-bold text-[10px] ${brakeColor}">${idx + 1}</span></td>
               <td class="w-28 py-1 pl-1">
                 <div class="relative h-6 bg-[#111111] flex items-center px-1 overflow-hidden border border-[#222222]">
                   <div class="absolute left-0 top-0 bottom-0 opacity-40" style="width: ${car?.throttle || 0}%; background-color: ${driver.team_colour};"></div>
@@ -384,65 +346,47 @@
                   <span class="relative z-10 ml-auto text-[9px] text-neutral-500">#${driver.driver_number}</span>
                 </div>
               </td>
-
-              <!-- 時間差距 -->
               <td class="w-24 py-1 text-center">
                 <div class="flex flex-col text-[10px]">
                   <span class="text-neutral-200">${interval?.gap_to_leader ?? (idx === 0 ? 'Leader' : '--')}</span>
                   <span class="text-neutral-500 text-[9px]">${interval?.interval ?? (idx === 0 ? 'Interval' : '--')}</span>
                 </div>
               </td>
-
-              <!-- 輪胎 -->
               <td class="w-14 py-1 text-center">${tyreBadge}</td>
-
-              <!-- 圈速與即時速度融合 -->
               <td class="w-24 py-1 text-center">
                 <div class="flex flex-col">
                   <span class="text-[10px] text-neutral-200 font-mono">${formatLapTime(lap?.lap_duration)}</span>
                   <span class="text-[9px] text-neutral-500 font-mono">${car?.speed ? `${car.speed} KM/H` : '--'}</span>
                 </div>
               </td>
-
-              <!-- Mini Sectors -->
               <td class="py-1 text-center">${miniSectorsHtml}</td>
-
-              <!-- 2026 OVT 狀態與無線電 -->
               <td class="w-16 py-1 text-right pr-2">
                 <div class="flex items-center justify-end space-x-1">
                   ${isOvertake ? '<span class="bg-[#b063ff] text-black font-black text-[8px] px-1 py-0.5">OVT</span>' : ''}
-                  ${radioUrl ? `<button onclick="window.playRadio('${radioUrl}')" class="text-[10px] text-white hover:text-red-500 cursor-pointer" title="Play Radio">📻</button>` : ''}
+                  ${radioUrl ? `<button onclick="window.playRadio('${radioUrl}')" class="text-[10px] text-white hover:text-red-500 cursor-pointer">📻</button>` : ''}
                 </div>
               </td>
             </tr>
           `;
         });
-
         leaderboardBody.innerHTML = html;
       }
 
-      // --- 6. 全域音訊播放器 ---
       window.playRadio = function (url) {
         if (!url) return;
-        const audio = new Audio(url);
-        audio.play().catch(e => console.error('Audio Playback Error:', e));
+        new Audio(url).play().catch(e => console.error('Audio Playback Error:', e));
       };
 
-      // --- 7. Canvas 動態繪製 (2D Track Map & Analytics Panel) ---
+      // --- 5. Canvas 動態繪製與 NaN 防護 ---
       function resizeCanvases() {
         const dpr = window.devicePixelRatio || 1;
-        
         const trackRect = trackMapCanvas.parentElement.getBoundingClientRect();
-        trackMapCanvas.width = trackRect.width * dpr;
-        trackMapCanvas.height = trackRect.height * dpr;
+        trackMapCanvas.width = trackRect.width * dpr; trackMapCanvas.height = trackRect.height * dpr;
         trackCtx.scale(dpr, dpr);
-
         const anaRect = analyticsCanvas.parentElement.getBoundingClientRect();
-        analyticsCanvas.width = anaRect.width * dpr;
-        analyticsCanvas.height = anaRect.height * dpr;
+        analyticsCanvas.width = anaRect.width * dpr; analyticsCanvas.height = anaRect.height * dpr;
         analyticsCtx.scale(dpr, dpr);
       }
-
       window.addEventListener('resize', resizeCanvases);
 
       function drawTrackMap() {
@@ -450,56 +394,51 @@
         const h = trackMapCanvas.parentElement.clientHeight;
         trackCtx.clearRect(0, 0, w, h);
 
-        if (state.circuitPath.length === 0) return;
+        if (!Array.isArray(state.circuitPath) || state.circuitPath.length === 0) return;
 
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         state.circuitPath.forEach(p => {
-          if (p.x < minX) minX = p.x;
-          if (p.x > maxX) maxX = p.x;
-          if (p.y < minY) minY = p.y;
-          if (p.y > maxY) maxY = p.y;
+          if (typeof p.x === 'number' && p.x < minX) minX = p.x;
+          if (typeof p.x === 'number' && p.x > maxX) maxX = p.x;
+          if (typeof p.y === 'number' && p.y < minY) minY = p.y;
+          if (typeof p.y === 'number' && p.y > maxY) maxY = p.y;
         });
 
         const pad = 24;
-        const scaleX = (w - pad * 2) / (maxX - minX || 1);
-        const scaleY = (h - pad * 2) / (maxY - minY || 1);
+        // NaN 與零除錯誤防護
+        const diffX = (maxX - minX) > 0 ? (maxX - minX) : 1;
+        const diffY = (maxY - minY) > 0 ? (maxY - minY) : 1;
+        
+        const scaleX = (w - pad * 2) / diffX;
+        const scaleY = (h - pad * 2) / diffY;
         const scale = Math.min(scaleX, scaleY);
 
         const transX = (val) => pad + (val - minX) * scale;
         const transY = (val) => h - (pad + (val - minY) * scale);
 
-        // 繪製賽道官方軌跡細灰線
         trackCtx.beginPath();
         trackCtx.strokeStyle = '#282828';
         trackCtx.lineWidth = 2.5;
-        trackCtx.lineCap = 'round';
-        trackCtx.lineJoin = 'round';
+        trackCtx.lineCap = 'round'; trackCtx.lineJoin = 'round';
         state.circuitPath.forEach((p, i) => {
-          const x = transX(p.x);
-          const y = transY(p.y);
+          const x = transX(p.x), y = transY(p.y);
           if (i === 0) trackCtx.moveTo(x, y);
           else trackCtx.lineTo(x, y);
         });
         trackCtx.closePath();
         trackCtx.stroke();
 
-        // 繪製即時車手圓點
         Object.entries(state.activeLocations).forEach(([dNumStr, loc]) => {
           const dNum = Number(dNumStr);
           const driver = state.drivers[dNum];
           const isPit = state.activeLaps[dNum]?.is_pit_out_lap || false;
-          const x = transX(loc.x);
-          const y = transY(loc.y);
+          const x = transX(loc.x), y = transY(loc.y);
 
           trackCtx.beginPath();
           trackCtx.arc(x, y, 4.5, 0, 2 * Math.PI);
-          // 進 Pit 轉純粉藍色 (#00f0ff)，否則為車隊原色
           trackCtx.fillStyle = isPit ? '#00f0ff' : (driver?.team_colour || '#FFFFFF');
           trackCtx.fill();
-
-          // 車手縮寫標籤
-          trackCtx.font = '9px monospace';
-          trackCtx.fillStyle = '#CCCCCC';
+          trackCtx.font = '9px monospace'; trackCtx.fillStyle = '#CCCCCC';
           trackCtx.fillText(driver?.name_acronym || dNumStr, x + 6, y + 3);
         });
       }
@@ -508,121 +447,71 @@
         const w = analyticsCanvas.parentElement.clientWidth;
         const h = analyticsCanvas.parentElement.clientHeight;
         analyticsCtx.clearRect(0, 0, w, h);
-
         const halfH = h / 2;
 
-        // --- 上半部：實時名次變更折線圖 (Position Trace) ---
-        analyticsCtx.strokeStyle = '#151515';
-        analyticsCtx.lineWidth = 1;
+        analyticsCtx.strokeStyle = '#151515'; analyticsCtx.lineWidth = 1;
         for (let i = 1; i <= 5; i++) {
           const y = (halfH / 5) * i;
-          analyticsCtx.beginPath();
-          analyticsCtx.moveTo(0, y);
-          analyticsCtx.lineTo(w, y);
-          analyticsCtx.stroke();
+          analyticsCtx.beginPath(); analyticsCtx.moveTo(0, y); analyticsCtx.lineTo(w, y); analyticsCtx.stroke();
         }
 
         const history = state.positionsHistory;
         if (history.length > 1) {
           const stepX = w / (history.length - 1);
-
           Object.values(state.drivers).forEach(driver => {
             const dNum = driver.driver_number;
-            analyticsCtx.beginPath();
-            analyticsCtx.strokeStyle = driver.team_colour || '#FFFFFF';
-            analyticsCtx.lineWidth = 1.5;
-
+            analyticsCtx.beginPath(); analyticsCtx.strokeStyle = driver.team_colour || '#FFFFFF'; analyticsCtx.lineWidth = 1.5;
             let hasDrawnFirst = false;
             history.forEach((hEntry, hIdx) => {
               const pos = hEntry.positions[dNum];
               if (pos !== undefined) {
                 const x = hIdx * stepX;
-                const y = ((pos - 1) / 19) * (halfH - 10) + 5; // Y軸反轉：P1在頂
-                if (!hasDrawnFirst) {
-                  analyticsCtx.moveTo(x, y);
-                  hasDrawnFirst = true;
-                } else {
-                  analyticsCtx.lineTo(x, y);
-                }
+                const y = ((pos - 1) / 19) * (halfH - 10) + 5;
+                if (!hasDrawnFirst) { analyticsCtx.moveTo(x, y); hasDrawnFirst = true; } 
+                else analyticsCtx.lineTo(x, y);
               }
             });
             analyticsCtx.stroke();
           });
         }
 
-        // 分界線
-        analyticsCtx.strokeStyle = '#222222';
-        analyticsCtx.beginPath();
-        analyticsCtx.moveTo(0, halfH);
-        analyticsCtx.lineTo(w, halfH);
-        analyticsCtx.stroke();
+        analyticsCtx.strokeStyle = '#222222'; analyticsCtx.beginPath();
+        analyticsCtx.moveTo(0, halfH); analyticsCtx.lineTo(w, halfH); analyticsCtx.stroke();
 
-        // --- 下半部：實時輪胎策略甘特圖 (Tyre Strategy Gantt) ---
-        const driversList = Object.values(state.drivers).slice(0, 10); // 取前 10 名緊湊展示
+        const driversList = Object.values(state.drivers).slice(0, 10);
         if (driversList.length > 0) {
           const rowH = (halfH - 10) / driversList.length;
           const maxLapEstimate = 60;
-
           driversList.forEach((driver, rIdx) => {
             const y = halfH + 5 + rIdx * rowH;
             const dNum = driver.driver_number;
             const stints = state.activeStints[dNum] || [];
-
-            analyticsCtx.fillStyle = '#666666';
-            analyticsCtx.font = '8px monospace';
+            analyticsCtx.fillStyle = '#666666'; analyticsCtx.font = '8px monospace';
             analyticsCtx.fillText(driver.name_acronym, 2, y + rowH - 2);
 
-            const startX = 28;
-            const barAreaW = w - startX - 4;
-
+            const startX = 28, barAreaW = w - startX - 4;
             stints.forEach(stint => {
               const comp = (stint.compound || 'M').toUpperCase();
-              let color = '#eab308'; // Medium
-              if (comp === 'SOFT') color = '#ef4444';
-              else if (comp === 'HARD') color = '#ffffff';
-
-              const sLap = stint.lap_start || 0;
-              const eLap = stint.lap_end || (sLap + 15);
-              const x1 = startX + (sLap / maxLapEstimate) * barAreaW;
-              const x2 = startX + (eLap / maxLapEstimate) * barAreaW;
+              let color = '#eab308'; if (comp === 'SOFT') color = '#ef4444'; else if (comp === 'HARD') color = '#ffffff';
+              const sLap = stint.lap_start || 0, eLap = stint.lap_end || (sLap + 15);
+              const x1 = startX + (sLap / maxLapEstimate) * barAreaW, x2 = startX + (eLap / maxLapEstimate) * barAreaW;
               const barW = Math.max(x2 - x1, 2);
-
-              analyticsCtx.fillStyle = color;
-              analyticsCtx.fillRect(x1, y + 1, barW, rowH - 2);
-
-              // 進站白標記
-              if (stint.lap_start > 0) {
-                analyticsCtx.fillStyle = '#ffffff';
-                analyticsCtx.fillRect(x1 - 1, y, 2, rowH);
-              }
+              analyticsCtx.fillStyle = color; analyticsCtx.fillRect(x1, y + 1, barW, rowH - 2);
+              if (stint.lap_start > 0) { analyticsCtx.fillStyle = '#ffffff'; analyticsCtx.fillRect(x1 - 1, y, 2, rowH); }
             });
           });
         }
       }
 
-      function renderCanvasLoop() {
-        drawTrackMap();
-        drawAnalytics();
-        requestAnimationFrame(renderCanvasLoop);
-      }
+      function renderCanvasLoop() { drawTrackMap(); drawAnalytics(); requestAnimationFrame(renderCanvasLoop); }
 
-      // --- 8. 系統啟動進入點 ---
+      // --- 6. 系統啟動進入點 ---
       async function main() {
         resizeCanvases();
         await initStaticData();
-
-        // 高頻輪詢 (1s)
-        fetchHighFreq();
-        setInterval(fetchHighFreq, 1000);
-
-        // 中頻輪詢 (3s)
-        fetchMidFreq();
-        setInterval(fetchMidFreq, 3000);
-
-        // 延遲佇列消耗時鐘 (250ms)
+        fetchHighFreq(); setInterval(fetchHighFreq, 1000);
+        fetchMidFreq(); setInterval(fetchMidFreq, 3000);
         setInterval(drainBuffers, 250);
-
-        // 啟動 Canvas 動畫迴圈
         renderCanvasLoop();
       }
 
