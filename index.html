@@ -15,11 +15,10 @@
 </head>
 <body class="h-screen w-screen bg-black text-white font-mono select-none overflow-hidden flex flex-col">
 
-  <!-- 頂部賽況、氣象與全局賽事控制橫幅 -->
   <header id="topBanner" class="h-10 border-b border-[#222222] flex items-center justify-between px-4 bg-[#0a0a0a] shrink-0 transition-none">
     <div class="flex items-center space-x-4">
       <span class="font-black text-red-600 text-sm tracking-widest">F1 // COMMAND</span>
-      <span id="sessionMeta" class="text-[10px] text-neutral-400">[CONNECTING OPENF1...]</span>
+      <span id="sessionMeta" class="text-[10px] text-neutral-400 font-bold">[CONNECTING OPENF1...]</span>
       
       <div id="weatherDisplay" class="hidden items-center space-x-3 text-[10px] text-neutral-300 border-l border-[#333] pl-4">
         <span>TRC: <span id="w-trc" class="font-bold text-white">--</span>°C</span>
@@ -38,9 +37,7 @@
     </div>
   </header>
 
-  <!-- 主操作區 -->
   <main class="flex-1 grid grid-cols-12 gap-1 p-1 overflow-hidden">
-    <!-- 左側 60%：融合式硬核數據表格 -->
     <section class="col-span-7 bg-[#050505] border border-[#1a1a1a] flex flex-col overflow-hidden">
       <table class="w-full text-left border-collapse table-fixed">
         <thead class="bg-[#111111] text-[10px] text-neutral-400 border-b border-[#222222] font-semibold">
@@ -62,7 +59,6 @@
       </div>
     </section>
 
-    <!-- 右側 40%：三層式佈局 -->
     <section class="col-span-5 flex flex-col gap-1 overflow-hidden">
       <div class="h-[35%] bg-[#050505] border border-[#1a1a1a] relative flex flex-col">
         <div class="absolute top-1 left-2 text-[9px] text-neutral-500 z-10">TRACK MAP // 2D RADAR</div>
@@ -83,9 +79,7 @@
 
       <div class="h-[30%] bg-[#050505] border border-[#1a1a1a] relative flex flex-col">
         <div class="absolute top-1 left-2 text-[9px] text-neutral-500 z-10 bg-black px-1">TERMINAL LOGS // RADIO & PENALTIES</div>
-        <div id="terminalLogs" class="flex-1 overflow-y-auto p-2 pt-5 text-[9px] space-y-1 font-mono">
-          <!-- 動態插入 Log -->
-        </div>
+        <div id="terminalLogs" class="flex-1 overflow-y-auto p-2 pt-5 text-[9px] space-y-1 font-mono"></div>
       </div>
     </section>
   </main>
@@ -94,18 +88,15 @@
     (function () {
       let delayOffset = 30; 
       let activeSessionKey = 'latest'; 
-      let isFirstRender = true;
       
-      // 🔴 [OPTIMIZATION: 虛擬時鐘與重播偵測]
-      let isReplay = false;
-      let virtualTimeMs = Date.now();
-      let sessionStartISO = '';
+      // 🔴 [OPTIMIZATION: 雙軌引擎模式狀態]
+      let isLiveSession = false; 
 
       const lastSampleTime = { location: {}, carData: {} };
       let lastRenderTime = 0, renderTimer = null;
 
       const state = {
-        sessionName: 'LIVE SESSION', circuitName: 'CIRCUIT',
+        sessionName: '', circuitName: '',
         drivers: {}, circuitPath: [], 
         activeCarData: {}, activeIntervals: {}, activeLaps: {}, activeStints: {}, activeLocations: {}, 
         activeRaceControl: null, activePits: {}, activeRadios: {}, positionsHistory: [], bestLapSec: null,
@@ -139,36 +130,37 @@
         delayDisplay.textContent = `${delayOffset}s`;
       });
 
-      // --- 1. 靜態資料與 UI 秒開初始化 ---
-      async function initStaticData() {
+      // --- 1. 雙軌引擎判定與靜態資料 ---
+      async function initSessionAndDrivers() {
         try {
           const sessRes = await fetch(`https://api.openf1.org/v1/sessions?session_key=${activeSessionKey}`);
           let sessJson = await sessRes.json();
           
           if (!Array.isArray(sessJson) || sessJson.length === 0) {
-            activeSessionKey = '9159'; // Singapore GP Fallback
+            activeSessionKey = '9159'; // Singapore GP
             sessJson = await (await fetch(`https://api.openf1.org/v1/sessions?session_key=${activeSessionKey}`)).json();
           }
 
           if (Array.isArray(sessJson) && sessJson.length > 0) {
             const latestSess = sessJson[sessJson.length - 1];
-            sessionStartISO = latestSess.date_start;
-            const endDate = latestSess.date_end;
+            state.sessionName = latestSess.session_name || 'UNKNOWN';
+            state.circuitName = latestSess.circuit_short_name || 'CIRCUIT';
+            
+            // 🔴 [OPTIMIZATION: 判斷 LIVE vs COMPLETED]
+            const now = Date.now();
+            const dateEndMs = latestSess.date_end ? new Date(latestSess.date_end).getTime() : Infinity;
+            isLiveSession = dateEndMs > now;
 
-            // 🔴 [OPTIMIZATION: 判斷是否為完結賽事，啟動虛擬重播時鐘 (開賽後 5 分鐘)]
-            if (endDate && new Date(endDate).getTime() < Date.now()) {
-              isReplay = true;
-              virtualTimeMs = new Date(sessionStartISO).getTime() + 300000;
+            if (isLiveSession) {
+              sessionMeta.textContent = `[🟢 LIVE // ${state.sessionName.toUpperCase()} - ${state.circuitName.toUpperCase()}]`;
+              sessionMeta.className = "text-[10px] text-green-400 font-bold";
             } else {
-              isReplay = false;
-              virtualTimeMs = Date.now();
+              sessionMeta.textContent = `[🏁 COMPLETED // ${state.sessionName.toUpperCase()} - ${state.circuitName.toUpperCase()}]`;
+              sessionMeta.className = "text-[10px] text-neutral-400 font-bold";
+              delaySlider.disabled = true; // 已完結賽事不需要防劇透
+              delaySlider.parentElement.style.opacity = '0.3';
             }
 
-            state.sessionName = latestSess.session_name || 'HISTORICAL FALLBACK';
-            state.circuitName = latestSess.circuit_short_name || 'CIRCUIT';
-            sessionMeta.textContent = `[${state.sessionName.toUpperCase()} - ${state.circuitName.toUpperCase()}]`;
-
-            // 🔴 [OPTIMIZATION: 修改賽道抓取機制，避免 session_key 引發 API 400 錯誤]
             if (latestSess.meeting_key) {
               fetch(`https://api.openf1.org/v1/meetings?meeting_key=${latestSess.meeting_key}`)
                 .then(r => r.json())
@@ -177,6 +169,7 @@
                     fetch(meetJson[0].circuit_info_url).then(tr => tr.json()).then(trackJson => {
                       if (trackJson && Array.isArray(trackJson.x)) {
                         state.circuitPath = trackJson.x.map((xVal, i) => ({ x: xVal, y: trackJson.y[i] }));
+                        drawTrackMap(); // 即刻繪製
                       }
                     }).catch(()=>{});
                   }
@@ -184,61 +177,105 @@
             }
           }
 
-          // 🔴 [OPTIMIZATION: 立刻抓取車手名單並渲染，不等待遙測資料，達成「秒開」]
           const dRes = await fetch(`https://api.openf1.org/v1/drivers?session_key=${activeSessionKey}`);
           const dJson = await dRes.json();
           if (Array.isArray(dJson)) {
             dJson.forEach(d => { state.drivers[d.driver_number] = { ...d, team_colour: d.team_colour ? `#${d.team_colour}` : '#FFFFFF' }; });
           }
-          renderUI(); // 畫出基礎表格框架
-
-          // 🔴 [OPTIMIZATION: 非阻塞並發執行 5 分鐘快照抓取 (加入 date>= 以免全表掃描超時卡死)]
-          if (sessionStartISO) {
-            const startISO = sessionStartISO;
-            const end5Mins = new Date(new Date(sessionStartISO).getTime() + 300000).toISOString();
-            const df = `&date>=${startISO}&date<=${end5Mins}`;
-
-            Promise.all([
-              fetch(`https://api.openf1.org/v1/car_data?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[]),
-              fetch(`https://api.openf1.org/v1/location?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[]),
-              fetch(`https://api.openf1.org/v1/position?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[]),
-              fetch(`https://api.openf1.org/v1/intervals?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[])
-            ]).then(([carData, locData, posData, intData]) => {
-              if (Array.isArray(carData)) {
-                carData.forEach(c => {
-                  const t = new Date(c.date).getTime();
-                  if (t - (lastSampleTime.carData[c.driver_number] || 0) >= 500) { buffers.carData.push(c); lastSampleTime.carData[c.driver_number] = t; }
-                });
-              }
-              if (Array.isArray(locData)) {
-                locData.forEach(l => {
-                  const t = new Date(l.date).getTime();
-                  if (t - (lastSampleTime.location[l.driver_number] || 0) >= 1000) { buffers.locations.push(l); lastSampleTime.location[l.driver_number] = t; }
-                });
-              }
-              if (Array.isArray(posData)) posData.forEach(p => buffers.positions.push(p));
-              if (Array.isArray(intData)) intData.forEach(i => buffers.intervals.push(i));
-            });
-          }
-        } catch (err) { console.error('Init Error:', err); }
+        } catch (err) {}
       }
 
-      // --- 2. 增量拉取與虛擬時鐘推進 ---
+      // --- 2. [MODE A] COMPLETED 大結局秒開模式 ---
+      // 🔴 [OPTIMIZATION: 直接抓取整場比賽的所有戰略資料，瞬間畫出滿版圖表與最終排名]
+      async function loadCompletedRaceInstant() {
+        try {
+          const endpoints = ['laps', 'intervals', 'race_control', 'team_radio', 'position', 'stints', 'weather'];
+          const fetches = endpoints.map(ep => fetch(`https://api.openf1.org/v1/${ep}?session_key=${activeSessionKey}`));
+          const responses = await Promise.all(fetches);
+          const [laps, intervals, rc, radios, positions, stints, weather] = await Promise.all(responses.map(res => res.json()));
+
+          // 更新天氣
+          if (Array.isArray(weather) && weather.length > 0) {
+            const w = weather[weather.length - 1];
+            document.getElementById('w-trc').textContent = w.track_temperature !== null ? w.track_temperature : '--';
+            document.getElementById('w-air').textContent = w.air_temperature !== null ? w.air_temperature : '--';
+            document.getElementById('w-hum').textContent = w.humidity !== null ? w.humidity : '--';
+            document.getElementById('w-wind').textContent = w.wind_speed !== null ? w.wind_speed : '--';
+            weatherDisplay.classList.remove('hidden'); weatherDisplay.classList.add('flex');
+          }
+
+          // 直接注入大結局資料 (Bypass Buffers)
+          if (Array.isArray(laps)) {
+            laps.forEach(l => {
+              if (l?.driver_number) {
+                state.activeLaps[l.driver_number] = l; // 會自動蓋過舊的，保留最後一圈
+                if (l.lap_duration && (!state.bestLapSec || l.lap_duration < state.bestLapSec)) state.bestLapSec = l.lap_duration;
+              }
+            });
+          }
+          if (Array.isArray(intervals)) {
+            intervals.forEach(i => { if (i?.driver_number) state.activeIntervals[i.driver_number] = i; });
+          }
+          if (Array.isArray(stints)) {
+            const sMap = {};
+            stints.forEach(s => { if (!sMap[s.driver_number]) sMap[s.driver_number] = []; sMap[s.driver_number].push(s); });
+            state.activeStints = sMap;
+          }
+          if (Array.isArray(positions)) {
+            const posMap = {}; // 按時間分組
+            positions.forEach(p => {
+              const tTag = new Date(p.date).toLocaleTimeString();
+              if (!posMap[tTag]) posMap[tTag] = { time: tTag, positions: {} };
+              posMap[tTag].positions[p.driver_number] = p.position;
+            });
+            state.positionsHistory = Object.values(posMap); // 完整繪製名次折線圖
+          }
+
+          // 獲取最後 1 分鐘的遙測，把車手停在終點線上
+          if (positions.length > 0) {
+            const endISO = positions[positions.length - 1].date;
+            const lastMin = new Date(new Date(endISO).getTime() - 60000).toISOString();
+            const [carRes, locRes] = await Promise.all([
+              fetch(`https://api.openf1.org/v1/car_data?session_key=${activeSessionKey}&date>=${lastMin}`),
+              fetch(`https://api.openf1.org/v1/location?session_key=${activeSessionKey}&date>=${lastMin}`)
+            ]);
+            const [carData, locData] = await Promise.all([carRes.json(), locRes.json()]);
+            if (Array.isArray(carData)) carData.forEach(c => { state.activeCarData[c.driver_number] = c; });
+            if (Array.isArray(locData)) locData.forEach(l => { state.activeLocations[l.driver_number] = l; });
+          }
+
+          // 終端機日誌
+          if (Array.isArray(rc)) {
+            rc.slice(-50).forEach(r => {
+              const msg = r.message || '';
+              const tTag = new Date(r.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+              if (/PENALTY/i.test(msg)) pushTerminalLog(tTag, 'PENALTY', `[L${r.lap_number || '-'}] ${msg}`, 'bg-red-600 text-white', null);
+              else if (/TRACK LIMITS/i.test(msg)) pushTerminalLog(tTag, 'TRK LIMIT', `[L${r.lap_number || '-'}] ${msg}`, 'bg-orange-500 text-black', null);
+              else if (r.category === 'Flag') pushTerminalLog(tTag, 'FLAG', msg, 'bg-neutral-700 text-yellow-300', null);
+            });
+          }
+          if (Array.isArray(radios)) {
+            radios.slice(-50).forEach(r => {
+              const driver = state.drivers[r.driver_number];
+              const dName = driver?.name_acronym || `#${r.driver_number}`;
+              const tColor = driver?.team_colour || '#555555';
+              const tTag = new Date(r.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+              const driverBadge = `<span class="px-1 py-0.5 rounded text-black font-black" style="background-color: ${tColor};">${dName}</span>`;
+              pushTerminalLog(tTag, 'RADIO', `${driverBadge} New Radio Message`, 'text-blue-400', r.recording_url);
+            });
+          }
+
+          renderAll(); // 一次性渲染全部，不啟動 setInterval
+        } catch (e) {}
+      }
+
+      // --- 3. [MODE B] LIVE 增量抓取模式 ---
       async function fetchHighFreqIncremental() {
-        if (isFirstRender) return;
-
-        // 🔴 [OPTIMIZATION: 讓歷史重播能穩定推進時間，擷取動態 5 秒區間]
-        if (isReplay) virtualTimeMs += 2000;
-        else virtualTimeMs = Date.now();
-
-        const endTimeISO = new Date(virtualTimeMs).toISOString();
-        const startTimeISO = new Date(virtualTimeMs - 5000).toISOString();
-        const df = `&date>=${startTimeISO}&date<=${endTimeISO}`;
-
+        const fiveSecAgo = new Date(Date.now() - 5000).toISOString(); 
         try {
           const [carRes, locRes] = await Promise.all([
-            fetch(`https://api.openf1.org/v1/car_data?session_key=${activeSessionKey}${df}`),
-            fetch(`https://api.openf1.org/v1/location?session_key=${activeSessionKey}${df}`)
+            fetch(`https://api.openf1.org/v1/car_data?session_key=${activeSessionKey}&date>=${fiveSecAgo}`),
+            fetch(`https://api.openf1.org/v1/location?session_key=${activeSessionKey}&date>=${fiveSecAgo}`)
           ]);
           const [carData, locData] = await Promise.all([carRes.json(), locRes.json()]);
 
@@ -258,25 +295,11 @@
       }
 
       async function fetchMidFreq() {
-        if (isFirstRender) return;
-
-        const endTimeISO = new Date(virtualTimeMs).toISOString();
-        const startTimeISO = new Date(virtualTimeMs - 6000).toISOString(); // 涵蓋過去 6 秒防漏
-        const df = `&date>=${startTimeISO}&date<=${endTimeISO}`;
-
         try {
-          // 🔴 [OPTIMIZATION: 單獨 catch 防護，一個 API 壞掉不會拖垮全部]
-          const fetches = [
-            fetch(`https://api.openf1.org/v1/laps?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[]),
-            fetch(`https://api.openf1.org/v1/intervals?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[]),
-            fetch(`https://api.openf1.org/v1/race_control?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[]),
-            fetch(`https://api.openf1.org/v1/pit?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[]),
-            fetch(`https://api.openf1.org/v1/team_radio?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[]),
-            fetch(`https://api.openf1.org/v1/position?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[]),
-            fetch(`https://api.openf1.org/v1/weather?session_key=${activeSessionKey}${df}`).then(r=>r.json()).catch(()=>[]),
-            fetch(`https://api.openf1.org/v1/stints?session_key=${activeSessionKey}`).then(r=>r.json()).catch(()=>[]) // stints 全局不設限
-          ];
-          const [laps, intervals, rc, pits, radios, positions, weather, stints] = await Promise.all(fetches);
+          const endpoints = ['laps', 'intervals', 'race_control', 'pit', 'team_radio', 'position', 'stints', 'weather'];
+          const fetches = endpoints.map(ep => fetch(`https://api.openf1.org/v1/${ep}?session_key=${activeSessionKey}`));
+          const responses = await Promise.all(fetches);
+          const [laps, intervals, rc, pits, radios, positions, stints, weather] = await Promise.all(responses.map(res => res.json()));
 
           if (Array.isArray(laps)) buffers.laps.push(...laps);
           if (Array.isArray(intervals)) buffers.intervals.push(...intervals);
@@ -301,10 +324,8 @@
         } catch (e) {}
       }
 
-      // --- 3. 延遲釋放與日誌解析 ---
       function drainBuffers() {
-        // 🔴 [OPTIMIZATION: 延遲錨點連動虛擬時鐘，確保歷史資料也能按比例扣除 Delay Offset]
-        const targetTime = virtualTimeMs - delayOffset * 1000;
+        const targetTime = Date.now() - delayOffset * 1000;
         const extract = (arr) => {
           if (!Array.isArray(arr) || arr.length === 0) return [];
           const idx = arr.findIndex(item => item.date && new Date(item.date).getTime() > targetTime);
@@ -347,7 +368,6 @@
               const dName = driver?.name_acronym || `#${r.driver_number}`;
               const tColor = driver?.team_colour || '#555555';
               const tTag = new Date(r.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-              
               const driverBadge = `<span class="px-1 py-0.5 rounded text-black font-black" style="background-color: ${tColor};">${dName}</span>`;
               pushTerminalLog(tTag, 'RADIO', `${driverBadge} New Radio Message`, 'text-blue-400', r.recording_url);
             }
@@ -378,7 +398,7 @@
         }
       }
 
-      // --- 4. 嚴格 500ms 防抖渲染 (Debounce) ---
+      // --- 4. 嚴格防抖與全域渲染 ---
       function scheduleDebouncedRender() {
         const now = Date.now();
         if (now - lastRenderTime >= 500) {
@@ -394,9 +414,11 @@
         if (state.activeRaceControl) {
           const rc = state.activeRaceControl;
           if (rc.flag === 'RED') {
-            raceControlFlag.className = 'block font-bold px-3 py-0.5 text-xs bg-red-600 text-white'; raceControlFlag.textContent = 'RED FLAG';
+            raceControlFlag.className = 'block font-bold px-3 py-0.5 text-xs bg-red-600 text-white';
+            raceControlFlag.textContent = 'RED FLAG';
           } else if (rc.category === 'SafetyCar') {
-            raceControlFlag.className = 'block font-bold px-3 py-0.5 text-xs bg-yellow-400 text-black'; raceControlFlag.textContent = rc.message?.includes('VIRTUAL') ? 'VSC DEPLOYED' : 'SAFETY CAR';
+            raceControlFlag.className = 'block font-bold px-3 py-0.5 text-xs bg-yellow-400 text-black';
+            raceControlFlag.textContent = rc.message?.includes('VIRTUAL') ? 'VSC DEPLOYED' : 'SAFETY CAR';
           } else { raceControlFlag.className = 'hidden'; }
         }
 
@@ -531,15 +553,23 @@
         }
       }
 
+      // --- 5. 系統啟動進入點 ---
       async function main() {
         resizeCanvases();
-        await initStaticData();
-        isFirstRender = false;
-
-        fetchHighFreqIncremental(); setInterval(fetchHighFreqIncremental, 2000);
-        fetchMidFreq(); setInterval(fetchMidFreq, 3000);
-        setInterval(drainBuffers, 250);
+        await initSessionAndDrivers();
+        
+        // 🔴 [OPTIMIZATION: 判斷執行模式]
+        if (isLiveSession) {
+          // LIVE 模式：增量輪詢與 Buffer 延遲
+          fetchHighFreqIncremental(); setInterval(fetchHighFreqIncremental, 2000);
+          fetchMidFreq(); setInterval(fetchMidFreq, 3000);
+          setInterval(drainBuffers, 250);
+        } else {
+          // COMPLETED 模式：一次過抓取整場並秒開，關閉所有輪詢
+          await loadCompletedRaceInstant();
+        }
       }
+      
       window.addEventListener('DOMContentLoaded', main);
     })();
   </script>
