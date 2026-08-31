@@ -30,10 +30,17 @@
 
     <div id="raceControlFlag" class="hidden font-bold px-3 py-0.5 text-xs"></div>
 
-    <div class="flex items-center space-x-2 text-xs">
-      <span class="text-neutral-500">DELAY OFFSET:</span>
-      <input type="range" id="delaySlider" min="0" max="90" value="30" class="w-28 h-1 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-red-600" />
-      <span id="delayDisplay" class="w-8 text-right font-bold text-neutral-300">30s</span>
+    <div class="flex items-center space-x-4 text-xs">
+      <div class="flex items-center space-x-2">
+        <span class="text-neutral-500">DELAY OFFSET:</span>
+        <input type="range" id="delaySlider" min="0" max="90" value="30" class="w-28 h-1 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-red-600" />
+        <span id="delayDisplay" class="w-8 text-right font-bold text-neutral-300">30s</span>
+      </div>
+      <!-- Mode Controls -->
+      <div class="flex items-center space-x-2 border-l border-[#333] pl-4">
+        <button onclick="document.getElementById('replayModal').classList.remove('hidden')" class="bg-neutral-800 px-2 py-1 text-[10px] hover:bg-neutral-700 rounded">LOAD REPLAY</button>
+        <button onclick="window.switchToLiveTiming()" class="bg-red-800 text-white px-2 py-1 text-[10px] hover:bg-red-700 rounded font-bold">LIVE TIMING</button>
+      </div>
     </div>
   </header>
 
@@ -84,13 +91,36 @@
     </section>
   </main>
 
+  <!-- Replay Modal UI -->
+  <div id="replayModal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+    <div class="bg-[#050505] border border-[#333] p-6 w-96 flex flex-col gap-4 shadow-2xl">
+      <h2 class="text-sm font-bold text-red-500 tracking-wider border-b border-[#333] pb-2">載入歷史賽事 (REPLAY ARCHIVE)</h2>
+      <div class="flex flex-col gap-2">
+        <label for="selSession" class="text-[10px] text-neutral-400">選擇賽事：</label>
+        <select id="selSession" class="bg-[#111] border border-[#333] text-white p-2 text-xs outline-none">
+          <option value="" disabled selected>請選擇 Session...</option>
+          <option value="9159">Singapore GP (9159)</option>
+          <option value="9165">Austin GP (9165)</option>
+          <option value="9158">Baku GP (9158)</option>
+        </select>
+      </div>
+      <div class="flex justify-end gap-2 mt-2 text-xs font-bold">
+        <button type="button" class="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-300" onclick="document.getElementById('replayModal').classList.add('hidden')">CANCEL</button>
+        <button type="button" class="px-4 py-2 bg-red-700 hover:bg-red-600 text-white" onclick="window.loadSelectedReplay()">LOAD SESSION</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     (function () {
       let delayOffset = 30; 
       let activeSessionKey = 'latest'; 
-      
-      // 🔴 [OPTIMIZATION: 雙軌引擎模式狀態]
       let isLiveSession = false; 
+
+      // --- New Global State Controls ---
+      let globalAbortController = new AbortController(); 
+      let activeIntervals = []; 
+      let currentAudio = null; 
 
       const lastSampleTime = { location: {}, carData: {} };
       let lastRenderTime = 0, renderTimer = null;
@@ -130,15 +160,69 @@
         delayDisplay.textContent = `${delayOffset}s`;
       });
 
+      // --- Core Reset & Reload Logic ---
+      window.resetEngineState = function() {
+        globalAbortController.abort();
+        globalAbortController = new AbortController();
+
+        if (typeof renderTimer !== 'undefined' && renderTimer) {
+          clearTimeout(renderTimer);
+          renderTimer = null;
+        }
+        activeIntervals.forEach(clearInterval);
+        activeIntervals = [];
+
+        if (currentAudio) {
+          currentAudio.pause();
+          currentAudio = null;
+        }
+
+        const resetStruct = (obj) => Object.keys(obj).forEach(key => obj[key] = Array.isArray(obj[key]) ? [] : {});
+        resetStruct(state);
+        state.terminalLogs = [];
+        state.positionsHistory = [];
+        state.bestLapSec = null;
+        resetStruct(buffers);
+
+        if (trackCtx) trackCtx.clearRect(0, 0, trackMapCanvas.width, trackMapCanvas.height);
+        if (analyticsCtx) analyticsCtx.clearRect(0, 0, analyticsCanvas.width, analyticsCanvas.height);
+        if (leaderboardBody) leaderboardBody.innerHTML = '';
+        if (terminalLogsDiv) terminalLogsDiv.innerHTML = '';
+        
+        sessionMeta.textContent = '[CONNECTING...]';
+        sessionMeta.className = "text-[10px] text-neutral-400 font-bold";
+        raceControlFlag.className = 'hidden';
+        weatherDisplay.classList.add('hidden');
+      };
+
+      window.switchToLiveTiming = function() {
+        activeSessionKey = 'latest';
+        window.resetEngineState();
+        main(); 
+      };
+
+      window.loadSelectedReplay = function() {
+        const sessionKey = document.getElementById('selSession').value;
+        if (!sessionKey) return;
+        
+        activeSessionKey = sessionKey;
+        document.getElementById('replayModal').classList.add('hidden');
+        window.resetEngineState();
+        main(); 
+      };
+
+      // --- Helper for Fetch with AbortSignal ---
+      const fetchApi = (url) => fetch(url, { signal: globalAbortController.signal });
+
       // --- 1. 雙軌引擎判定與靜態資料 ---
       async function initSessionAndDrivers() {
         try {
-          const sessRes = await fetch(`https://api.openf1.org/v1/sessions?session_key=${activeSessionKey}`);
+          const sessRes = await fetchApi(`https://api.openf1.org/v1/sessions?session_key=${activeSessionKey}`);
           let sessJson = await sessRes.json();
           
           if (!Array.isArray(sessJson) || sessJson.length === 0) {
-            activeSessionKey = '9159'; // Singapore GP
-            sessJson = await (await fetch(`https://api.openf1.org/v1/sessions?session_key=${activeSessionKey}`)).json();
+            activeSessionKey = '9159'; 
+            sessJson = await (await fetchApi(`https://api.openf1.org/v1/sessions?session_key=${activeSessionKey}`)).json();
           }
 
           if (Array.isArray(sessJson) && sessJson.length > 0) {
@@ -146,7 +230,6 @@
             state.sessionName = latestSess.session_name || 'UNKNOWN';
             state.circuitName = latestSess.circuit_short_name || 'CIRCUIT';
             
-            // 🔴 [OPTIMIZATION: 判斷 LIVE vs COMPLETED]
             const now = Date.now();
             const dateEndMs = latestSess.date_end ? new Date(latestSess.date_end).getTime() : Infinity;
             isLiveSession = dateEndMs > now;
@@ -154,22 +237,24 @@
             if (isLiveSession) {
               sessionMeta.textContent = `[🟢 LIVE // ${state.sessionName.toUpperCase()} - ${state.circuitName.toUpperCase()}]`;
               sessionMeta.className = "text-[10px] text-green-400 font-bold";
+              delaySlider.disabled = false;
+              delaySlider.parentElement.style.opacity = '1';
             } else {
               sessionMeta.textContent = `[🏁 COMPLETED // ${state.sessionName.toUpperCase()} - ${state.circuitName.toUpperCase()}]`;
               sessionMeta.className = "text-[10px] text-neutral-400 font-bold";
-              delaySlider.disabled = true; // 已完結賽事不需要防劇透
+              delaySlider.disabled = true; 
               delaySlider.parentElement.style.opacity = '0.3';
             }
 
             if (latestSess.meeting_key) {
-              fetch(`https://api.openf1.org/v1/meetings?meeting_key=${latestSess.meeting_key}`)
+              fetchApi(`https://api.openf1.org/v1/meetings?meeting_key=${latestSess.meeting_key}`)
                 .then(r => r.json())
                 .then(meetJson => {
                   if (Array.isArray(meetJson) && meetJson.length > 0 && meetJson[0].circuit_info_url) {
-                    fetch(meetJson[0].circuit_info_url).then(tr => tr.json()).then(trackJson => {
+                    fetchApi(meetJson[0].circuit_info_url).then(tr => tr.json()).then(trackJson => {
                       if (trackJson && Array.isArray(trackJson.x)) {
                         state.circuitPath = trackJson.x.map((xVal, i) => ({ x: xVal, y: trackJson.y[i] }));
-                        drawTrackMap(); // 即刻繪製
+                        drawTrackMap();
                       }
                     }).catch(()=>{});
                   }
@@ -177,7 +262,7 @@
             }
           }
 
-          const dRes = await fetch(`https://api.openf1.org/v1/drivers?session_key=${activeSessionKey}`);
+          const dRes = await fetchApi(`https://api.openf1.org/v1/drivers?session_key=${activeSessionKey}`);
           const dJson = await dRes.json();
           if (Array.isArray(dJson)) {
             dJson.forEach(d => { state.drivers[d.driver_number] = { ...d, team_colour: d.team_colour ? `#${d.team_colour}` : '#FFFFFF' }; });
@@ -186,15 +271,13 @@
       }
 
       // --- 2. [MODE A] COMPLETED 大結局秒開模式 ---
-      // 🔴 [OPTIMIZATION: 直接抓取整場比賽的所有戰略資料，瞬間畫出滿版圖表與最終排名]
       async function loadCompletedRaceInstant() {
         try {
           const endpoints = ['laps', 'intervals', 'race_control', 'team_radio', 'position', 'stints', 'weather'];
-          const fetches = endpoints.map(ep => fetch(`https://api.openf1.org/v1/${ep}?session_key=${activeSessionKey}`));
+          const fetches = endpoints.map(ep => fetchApi(`https://api.openf1.org/v1/${ep}?session_key=${activeSessionKey}`));
           const responses = await Promise.all(fetches);
           const [laps, intervals, rc, radios, positions, stints, weather] = await Promise.all(responses.map(res => res.json()));
 
-          // 更新天氣
           if (Array.isArray(weather) && weather.length > 0) {
             const w = weather[weather.length - 1];
             document.getElementById('w-trc').textContent = w.track_temperature !== null ? w.track_temperature : '--';
@@ -204,11 +287,10 @@
             weatherDisplay.classList.remove('hidden'); weatherDisplay.classList.add('flex');
           }
 
-          // 直接注入大結局資料 (Bypass Buffers)
           if (Array.isArray(laps)) {
             laps.forEach(l => {
               if (l?.driver_number) {
-                state.activeLaps[l.driver_number] = l; // 會自動蓋過舊的，保留最後一圈
+                state.activeLaps[l.driver_number] = l;
                 if (l.lap_duration && (!state.bestLapSec || l.lap_duration < state.bestLapSec)) state.bestLapSec = l.lap_duration;
               }
             });
@@ -222,29 +304,27 @@
             state.activeStints = sMap;
           }
           if (Array.isArray(positions)) {
-            const posMap = {}; // 按時間分組
+            const posMap = {}; 
             positions.forEach(p => {
               const tTag = new Date(p.date).toLocaleTimeString();
               if (!posMap[tTag]) posMap[tTag] = { time: tTag, positions: {} };
               posMap[tTag].positions[p.driver_number] = p.position;
             });
-            state.positionsHistory = Object.values(posMap); // 完整繪製名次折線圖
+            state.positionsHistory = Object.values(posMap); 
           }
 
-          // 獲取最後 1 分鐘的遙測，把車手停在終點線上
           if (positions.length > 0) {
             const endISO = positions[positions.length - 1].date;
             const lastMin = new Date(new Date(endISO).getTime() - 60000).toISOString();
             const [carRes, locRes] = await Promise.all([
-              fetch(`https://api.openf1.org/v1/car_data?session_key=${activeSessionKey}&date>=${lastMin}`),
-              fetch(`https://api.openf1.org/v1/location?session_key=${activeSessionKey}&date>=${lastMin}`)
+              fetchApi(`https://api.openf1.org/v1/car_data?session_key=${activeSessionKey}&date>=${lastMin}`),
+              fetchApi(`https://api.openf1.org/v1/location?session_key=${activeSessionKey}&date>=${lastMin}`)
             ]);
             const [carData, locData] = await Promise.all([carRes.json(), locRes.json()]);
             if (Array.isArray(carData)) carData.forEach(c => { state.activeCarData[c.driver_number] = c; });
             if (Array.isArray(locData)) locData.forEach(l => { state.activeLocations[l.driver_number] = l; });
           }
 
-          // 終端機日誌
           if (Array.isArray(rc)) {
             rc.slice(-50).forEach(r => {
               const msg = r.message || '';
@@ -265,7 +345,7 @@
             });
           }
 
-          renderAll(); // 一次性渲染全部，不啟動 setInterval
+          renderAll(); 
         } catch (e) {}
       }
 
@@ -274,8 +354,8 @@
         const fiveSecAgo = new Date(Date.now() - 5000).toISOString(); 
         try {
           const [carRes, locRes] = await Promise.all([
-            fetch(`https://api.openf1.org/v1/car_data?session_key=${activeSessionKey}&date>=${fiveSecAgo}`),
-            fetch(`https://api.openf1.org/v1/location?session_key=${activeSessionKey}&date>=${fiveSecAgo}`)
+            fetchApi(`https://api.openf1.org/v1/car_data?session_key=${activeSessionKey}&date>=${fiveSecAgo}`),
+            fetchApi(`https://api.openf1.org/v1/location?session_key=${activeSessionKey}&date>=${fiveSecAgo}`)
           ]);
           const [carData, locData] = await Promise.all([carRes.json(), locRes.json()]);
 
@@ -297,7 +377,7 @@
       async function fetchMidFreq() {
         try {
           const endpoints = ['laps', 'intervals', 'race_control', 'pit', 'team_radio', 'position', 'stints', 'weather'];
-          const fetches = endpoints.map(ep => fetch(`https://api.openf1.org/v1/${ep}?session_key=${activeSessionKey}`));
+          const fetches = endpoints.map(ep => fetchApi(`https://api.openf1.org/v1/${ep}?session_key=${activeSessionKey}`));
           const responses = await Promise.all(fetches);
           const [laps, intervals, rc, pits, radios, positions, stints, weather] = await Promise.all(responses.map(res => res.json()));
 
@@ -398,7 +478,6 @@
         }
       }
 
-      // --- 4. 嚴格防抖與全域渲染 ---
       function scheduleDebouncedRender() {
         const now = Date.now();
         if (now - lastRenderTime >= 500) {
@@ -452,14 +531,14 @@
               <td class="w-14 py-1 text-center">${tyreBadge}</td>
               <td class="w-24 py-1 text-center"><div class="flex flex-col"><span class="text-[10px] text-neutral-200 font-mono">${formatLapTime(lap.lap_duration)}</span><span class="text-[9px] text-neutral-500 font-mono">${car.speed ? `${car.speed} KM/H` : '--'}</span></div></td>
               <td class="py-1 text-center">${miniSectorsHtml}</td>
-              <td class="w-16 py-1 text-right pr-2"><div class="flex items-center justify-end space-x-1">${isOvertake ? '<span class="bg-[#b063ff] text-black font-black text-[8px] px-1 py-0.5">OVT</span>' : ''}${state.activeRadios[dNum] ? `<button onclick="window.playRadio('${state.activeRadios[dNum]}')" class="text-[10px] text-white hover:text-red-500 cursor-pointer">📻</button>` : ''}</div></td>
+              <td class="w-16 py-1 text-right pr-2"><div class="flex items-center justify-end space-x-1">${isOvertake ? '<span class="bg-[#b063ff] text-black font-black text-[8px] px-1 py-0.5">OVT</span>' : ''}${state.activeRadios[dNum] ? `<button onclick="window.toggleRadio(this, '${state.activeRadios[dNum]}')" class="text-[8px] text-white bg-[#222] hover:bg-red-600 px-1 py-0.5 rounded cursor-pointer transition-colors">▶ PLAY</button>` : ''}</div></td>
             </tr>`;
         }).join('');
       }
 
       function renderTerminalLogs() {
         terminalLogsDiv.innerHTML = state.terminalLogs.map(log => {
-          const playBtn = log.audioUrl ? `<button onclick="window.playRadio('${log.audioUrl}')" class="ml-auto text-white bg-[#222] hover:bg-red-600 px-1.5 py-0.5 text-[8px] rounded cursor-pointer transition-colors">▶ PLAY</button>` : '';
+          const playBtn = log.audioUrl ? `<button onclick="window.toggleRadio(this, '${log.audioUrl}')" class="ml-auto text-white bg-[#222] hover:bg-red-600 px-1.5 py-0.5 text-[8px] rounded cursor-pointer transition-colors">▶ PLAY</button>` : '';
           return `
             <div class="flex items-center gap-2 border-b border-[#151515] pb-1.5 mb-1 hover:bg-[#0d0d0d] px-1">
               <span class="text-neutral-600 text-[9px] shrink-0">${log.time}</span>
@@ -471,9 +550,24 @@
         }).join('');
       }
 
-      window.playRadio = function (url) {
-        if (!url) return;
-        new Audio(url).play().catch(e => console.error('Audio Playback Error:', e));
+      // --- New Audio Toggle Function ---
+      window.toggleRadio = function (btnElement, audioUrl) {
+        if (!audioUrl) return;
+        
+        if (currentAudio) {
+          currentAudio.pause();
+          currentAudio = null;
+          btnElement.textContent = '▶ PLAY';
+          btnElement.classList.remove('bg-red-600');
+          btnElement.classList.add('bg-[#222]');
+          return;
+        }
+        
+        currentAudio = new Audio(audioUrl);
+        currentAudio.play().catch(e => console.error('Audio play blocked:', e));
+        btnElement.textContent = '■ STOP';
+        btnElement.classList.remove('bg-[#222]');
+        btnElement.classList.add('bg-red-600');
       };
 
       function resizeCanvases() {
@@ -553,19 +647,15 @@
         }
       }
 
-      // --- 5. 系統啟動進入點 ---
       async function main() {
         resizeCanvases();
         await initSessionAndDrivers();
         
-        // 🔴 [OPTIMIZATION: 判斷執行模式]
         if (isLiveSession) {
-          // LIVE 模式：增量輪詢與 Buffer 延遲
-          fetchHighFreqIncremental(); setInterval(fetchHighFreqIncremental, 2000);
-          fetchMidFreq(); setInterval(fetchMidFreq, 3000);
-          setInterval(drainBuffers, 250);
+          fetchHighFreqIncremental(); activeIntervals.push(setInterval(fetchHighFreqIncremental, 2000));
+          fetchMidFreq(); activeIntervals.push(setInterval(fetchMidFreq, 3000));
+          activeIntervals.push(setInterval(drainBuffers, 250));
         } else {
-          // COMPLETED 模式：一次過抓取整場並秒開，關閉所有輪詢
           await loadCompletedRaceInstant();
         }
       }
