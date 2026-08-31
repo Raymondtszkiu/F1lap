@@ -20,7 +20,6 @@ interface StintData { driver_number: number; stint_number: number; compound: 'SO
 interface LocationData { driver_number: number; x: number; y: number; z: number; date: string; }
 interface RaceControlData { category: string; flag?: string; message?: string; sector?: number; date: string; }
 interface PitData { driver_number: number; lane_duration: number; stop_duration: number; lap_number: number; date: string; }
-interface RadioData { driver_number: number; recording_url: string; date: string; }
 interface PositionData { driver_number: number; position: number; date: string; }
 
 const formatLapTime = (sec: number | null): string => {
@@ -31,17 +30,22 @@ const formatLapTime = (sec: number | null): string => {
 };
 
 export default function F1LiveCommandCenter() {
-  // --- 狀態管理 ---
   const [delayOffset, setDelayOffset] = useState<number>(30); 
   const [sessionName, setSessionName] = useState<string>('LIVE SESSION');
   const [circuitName, setCircuitName] = useState<string>('CIRCUIT');
   
-  // 核心基礎資料與動態 Session
+  // 🔴 [OPTIMIZATION: 動態 Session 降級備援]
   const activeSessionKey = useRef<string>('latest');
+  
+  // 🔴 [OPTIMIZATION: 全域採樣時鐘紀錄，用於控制 0.5s / 1.0s 採樣率]
+  const sampleClocks = useRef({
+    carData: {} as Record<number, number>,
+    location: {} as Record<number, number>
+  });
+
   const [drivers, setDrivers] = useState<Record<number, Driver>>({});
   const [circuitPath, setCircuitPath] = useState<{ x: number; y: number }[]>([]);
 
-  // 渲染就緒之即時狀態
   const [activeCarData, setActiveCarData] = useState<Record<number, CarData>>({});
   const [activeIntervals, setActiveIntervals] = useState<Record<number, IntervalData>>({});
   const [activeLaps, setActiveLaps] = useState<Record<number, LapData>>({});
@@ -53,7 +57,6 @@ export default function F1LiveCommandCenter() {
   const [activeRadios, setActiveRadios] = useState<Record<number, string>>({});
   const [positionsHistory, setPositionsHistory] = useState<any[]>([]);
 
-  // --- 延遲陣列緩衝區 (Buffer Refs) ---
   const bufferCarData = useRef<CarData[]>([]);
   const bufferIntervals = useRef<IntervalData[]>([]);
   const bufferLaps = useRef<LapData[]>([]);
@@ -65,7 +68,7 @@ export default function F1LiveCommandCenter() {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // 1. 初始化賽事資料與動態降級 (Session Fallback)
+  // 1. 初始化賽事資料與動態降級
   useEffect(() => {
     let isMounted = true;
     async function initStaticData() {
@@ -74,7 +77,7 @@ export default function F1LiveCommandCenter() {
         const sessRes = await fetch(`https://api.openf1.org/v1/sessions?session_key=${currentKey}`);
         let sessJson = await sessRes.json();
         
-        // 降級保護：若 latest 無資料，退回 9159 (2023 Singapore)
+        // 🔴 [OPTIMIZATION: 降級保護，無最新賽事則切換至 9159 新加坡大獎賽]
         if (!Array.isArray(sessJson) || sessJson.length === 0) {
           currentKey = '9159';
           activeSessionKey.current = currentKey;
@@ -87,14 +90,18 @@ export default function F1LiveCommandCenter() {
           setCircuitName(sessJson[sessJson.length - 1].circuit_short_name || 'CIRCUIT');
         }
 
-        const meetRes = await fetch('https://api.openf1.org/v1/meetings?year=latest');
+        const meetRes = await fetch(`https://api.openf1.org/v1/meetings?session_key=${currentKey}`);
         const meetJson = await meetRes.json();
         if (meetJson && meetJson.length > 0 && meetJson[meetJson.length - 1].circuit_info_url) {
-          const trackRes = await fetch(meetJson[meetJson.length - 1].circuit_info_url);
-          const trackJson = await trackRes.json();
-          if (trackJson && Array.isArray(trackJson.x) && isMounted) {
-            const path = trackJson.x.map((xVal: number, i: number) => ({ x: xVal, y: trackJson.y[i] }));
-            setCircuitPath(path);
+          try {
+            const trackRes = await fetch(meetJson[meetJson.length - 1].circuit_info_url);
+            const trackJson = await trackRes.json();
+            if (trackJson && Array.isArray(trackJson.x) && isMounted) {
+              const path = trackJson.x.map((xVal: number, i: number) => ({ x: xVal, y: trackJson.y[i] }));
+              setCircuitPath(path);
+            }
+          } catch (e) {
+            console.warn('Circuit Info URL Timeout. Will use bounding box fallback.');
           }
         }
 
@@ -107,24 +114,51 @@ export default function F1LiveCommandCenter() {
           });
           setDrivers(dMap);
         }
-      } catch (err) { console.error('Data Init Error:', err); }
+      } catch (err) {}
     }
     initStaticData();
     return () => { isMounted = false; };
   }, []);
 
-  // 2. 數據拉取輪詢 (Push into Buffer)
+  // 2. 數據拉取輪詢
   useEffect(() => {
+    // 🔴 [OPTIMIZATION: 混合增量拉取 (Incremental Fetch) 與精確採樣]
     const fetchHighFreq = async () => {
+      const now = new Date();
+      // 只抓取過去 5000ms 的資料塊，降低 Payload
+      const fiveSecAgo = new Date(now.getTime() - 5000).toISOString();
+      const key = activeSessionKey.current;
+      
       try {
-        const key = activeSessionKey.current;
         const [carRes, locRes] = await Promise.all([
-          fetch(`https://api.openf1.org/v1/car_data?session_key=${key}`),
-          fetch(`https://api.openf1.org/v1/location?session_key=${key}`)
+          fetch(`https://api.openf1.org/v1/car_data?session_key=${key}&date>=${fiveSecAgo}`),
+          fetch(`https://api.openf1.org/v1/location?session_key=${key}&date>=${fiveSecAgo}`)
         ]);
         const [carJson, locJson] = await Promise.all([carRes.json(), locRes.json()]);
-        if (Array.isArray(carJson)) bufferCarData.current.push(...carJson);
-        if (Array.isArray(locJson)) bufferLocations.current.push(...locJson);
+
+        if (Array.isArray(carJson)) {
+          carJson.forEach(c => {
+            const t = new Date(c.date).getTime();
+            const lastT = sampleClocks.current.carData[c.driver_number] || 0;
+            // 🔴 [OPTIMIZATION: car_data 精確採樣 0.5s 間隔]
+            if (t - lastT >= 500) {
+              bufferCarData.current.push(c);
+              sampleClocks.current.carData[c.driver_number] = t;
+            }
+          });
+        }
+        
+        if (Array.isArray(locJson)) {
+          locJson.forEach(l => {
+            const t = new Date(l.date).getTime();
+            const lastT = sampleClocks.current.location[l.driver_number] || 0;
+            // 🔴 [OPTIMIZATION: location 精確採樣 1.0s 間隔]
+            if (t - lastT >= 1000) {
+              bufferLocations.current.push(l);
+              sampleClocks.current.location[l.driver_number] = t;
+            }
+          });
+        }
       } catch (e) {}
     };
 
@@ -163,13 +197,15 @@ export default function F1LiveCommandCenter() {
       } catch (e) {}
     };
 
-    const hfInterval = setInterval(fetchHighFreq, 1000);
+    // 🔴 [OPTIMIZATION: 高頻輪詢改為每 2000ms 執行一次增量擷取]
+    const hfInterval = setInterval(fetchHighFreq, 2000);
     const mfInterval = setInterval(fetchMidFreq, 3000);
     return () => { clearInterval(hfInterval); clearInterval(mfInterval); };
   }, []);
 
-  // 3. 延遲釋放引擎 (防空陣列保護)
+  // 3. 延遲釋放引擎與防抖渲染
   useEffect(() => {
+    // 🔴 [OPTIMIZATION: React 防抖渲染 (Debounce)，將佇列消耗週期嚴格鎖定在 500ms 一次，消除瀏覽器卡頓]
     const drainInterval = setInterval(() => {
       const targetTime = Date.now() - delayOffset * 1000;
 
@@ -251,12 +287,12 @@ export default function F1LiveCommandCenter() {
           return latest.slice(-30);
         });
       }
-    }, 250);
+    }, 500); // <-- Debounce Interval Set to 500ms
 
     return () => clearInterval(drainInterval);
   }, [delayOffset, bestLapSec]);
 
-  // 4. HTML5 Canvas 2D 賽道投影 (幾何防呆防護)
+  // 4. HTML5 Canvas 2D 賽道投影
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -266,24 +302,26 @@ export default function F1LiveCommandCenter() {
 
     const render = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (!Array.isArray(circuitPath) || circuitPath.length === 0) {
-        animId = requestAnimationFrame(render);
-        return;
-      }
-
+      
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      circuitPath.forEach(p => {
-        if (typeof p.x === 'number' && p.x < minX) minX = p.x;
-        if (typeof p.x === 'number' && p.x > maxX) maxX = p.x;
-        if (typeof p.y === 'number' && p.y < minY) minY = p.y;
-        if (typeof p.y === 'number' && p.y > maxY) maxY = p.y;
-      });
+      
+      // 🔴 [OPTIMIZATION: Bounding Box 備援與幾何零除防護]
+      if (Array.isArray(circuitPath) && circuitPath.length > 0) {
+        circuitPath.forEach(p => {
+          if (typeof p.x === 'number' && p.x < minX) minX = p.x;
+          if (typeof p.x === 'number' && p.x > maxX) maxX = p.x;
+          if (typeof p.y === 'number' && p.y < minY) minY = p.y;
+          if (typeof p.y === 'number' && p.y > maxY) maxY = p.y;
+        });
+      } else {
+        // Fallback to Singapore GP constants if path is empty/timeout
+        minX = -2500; maxX = 2000; minY = -1500; maxY = 3500;
+      }
 
       const pad = 30;
       const w = canvas.width - pad * 2;
       const h = canvas.height - pad * 2;
       
-      // 防止 NaN 或零除錯誤
       const diffX = (maxX - minX) > 0 ? (maxX - minX) : 1;
       const diffY = (maxY - minY) > 0 ? (maxY - minY) : 1;
       const scaleX = w / diffX;
@@ -293,17 +331,21 @@ export default function F1LiveCommandCenter() {
       const transX = (val: number) => pad + (val - minX) * scale;
       const transY = (val: number) => canvas.height - (pad + (val - minY) * scale);
 
-      ctx.beginPath();
-      ctx.strokeStyle = '#333333';
-      ctx.lineWidth = 3;
-      circuitPath.forEach((p, idx) => {
-        const x = transX(p.x), y = transY(p.y);
-        if (idx === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.closePath();
-      ctx.stroke();
+      // 繪製賽道
+      if (circuitPath.length > 0) {
+        ctx.beginPath();
+        ctx.strokeStyle = '#333333';
+        ctx.lineWidth = 3;
+        circuitPath.forEach((p, idx) => {
+          const x = transX(p.x), y = transY(p.y);
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.closePath();
+        ctx.stroke();
+      }
 
+      // 繪製車手點
       Object.entries(activeLocations).forEach(([dNumStr, loc]) => {
         const dNum = Number(dNumStr);
         const dMeta = drivers[dNum];
@@ -451,7 +493,6 @@ export default function F1LiveCommandCenter() {
           <div className="h-1/2 bg-[#050505] border border-[#1a1a1a] flex flex-col p-1 overflow-hidden">
             <span className="text-[9px] text-neutral-500 mb-1">POSITION TRACE & TYRE STRATEGY</span>
             
-            {/* Recharts 折線圖 */}
             <div className="h-2/3 w-full border-b border-[#222]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={positionsHistory}>
@@ -466,7 +507,6 @@ export default function F1LiveCommandCenter() {
               </ResponsiveContainer>
             </div>
 
-            {/* 自定義 React 輪胎策略甘特圖 */}
             <div className="h-1/3 w-full overflow-hidden flex flex-col justify-around py-1">
               {sortedDrivers.slice(0, 5).map(driver => {
                 const stints = activeStints[driver.driver_number] || [];
